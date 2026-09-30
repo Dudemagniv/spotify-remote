@@ -1138,7 +1138,7 @@ body.lyrics-on .title { font-size: 40px; }
     return String(n || '').toLowerCase().replace(/\(.*?\)|\[.*?\]/g, '').replace(/\s+-\s+.*$/, '')
       .replace(/[^a-z0-9\u00c0-\uffff ]+/g, '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
   }
-  function buildRadio(t) {
+  function genreRadio(t) {
     var artist = t.artists && t.artists[0];
     var own = t.uri || ('spotify:track:' + t.id);
     if (!artist) return Promise.resolve([own]);
@@ -1166,6 +1166,82 @@ body.lyrics-on .title { font-size: 40px; }
       var rest = pick(groups[0], 5);
       for (var i = 1; i < groups.length; i++) rest = rest.concat(pick(groups[i], 8));
       return [own].concat(shuffle(rest));
+    }).catch(function () { return [own]; });
+  }
+
+  // ----- better radio: similar artists (Deezer) + their popular songs (Spotify) -----
+  var NOT_STUDIO = /\b(live|demo|remix|karaoke|instrumental|acoustic|unplugged|remaster(ed)?|version)\b/i;
+  function jsonp(url, ms) {
+    return new Promise(function (resolve, reject) {
+      var cb = 'dz' + Date.now() + Math.floor(Math.random() * 1e6), el = document.createElement('script'), done = false;
+      function end() { if (done) return; done = true; window[cb] = undefined; if (el.parentNode) el.parentNode.removeChild(el); }
+      window[cb] = function (d) { end(); resolve(d); };
+      el.onerror = function () { end(); reject(new Error('jsonp')); };
+      setTimeout(function () { if (!done) { end(); reject(new Error('timeout')); } }, ms || 4000);
+      el.src = url + (url.indexOf('?') < 0 ? '?' : '&') + 'output=jsonp&callback=' + cb;
+      document.head.appendChild(el);
+    });
+  }
+  function sameArtist(x, name) {
+    var want = baseName(name);
+    return (x.artists || []).some(function (a) { return baseName(a.name) === want; });
+  }
+  // a picker that never returns the same song (under any version's name) twice
+  function newPicker(seed) {
+    var seen = {}, names = {}; seen[seed.id] = true; names[baseName(seed.name)] = true;
+    return function (list, max, filter) {
+      var out = [];
+      list.forEach(function (x) {
+        if (!x || !x.id || out.length >= max || seen[x.id] || x.is_playable === false) return;
+        if (NOT_STUDIO.test(x.name) || NOT_STUDIO.test((x.album && x.album.name) || '')) return;
+        if (filter && !filter(x)) return;
+        var nm = baseName(x.name); if (nm && names[nm]) return;
+        seen[x.id] = true; names[nm] = true; out.push(x.uri || ('spotify:track:' + x.id));
+      });
+      return out;
+    };
+  }
+  // Spotify's own recommendations (closed to newer apps, so this usually just falls through)
+  function spotifyRecs(t) {
+    return api('GET', '/recommendations?limit=30&seed_tracks=' + t.id).then(function (r) {
+      return newPicker(t)((r && r.tracks) || [], 30);
+    }).catch(function () { return []; });
+  }
+  function deezerRadio(t, artist) {
+    var pick = newPicker(t);
+    var dz = 'https://api.deezer.com/';
+    return jsonp(dz + 'search/artist?limit=5&q=' + encodeURIComponent(artist.name)).then(function (r) {
+      var list = (r && r.data) || [], want = baseName(artist.name), hit = null;
+      for (var i = 0; i < list.length; i++) if (baseName(list[i].name) === want) { hit = list[i]; break; }
+      if (!hit) return [];
+      return jsonp(dz + 'artist/' + hit.id + '/related?limit=20').then(function (rel) { return (rel && rel.data) || []; });
+    }).then(function (related) {
+      if (!related.length) return [];
+      var names = shuffle(related.map(function (a) { return a.name; })).slice(0, 10);
+      var jobs = names.map(function (n) {
+        return trackSearch('artist:"' + n.replace(/"/g, '') + '"').then(function (items) {
+          return pick(shuffle(items.slice(0, 6)), 3, function (x) { return sameArtist(x, n); });
+        });
+      });
+      jobs.push(trackSearch('artist:"' + artist.name.replace(/"/g, '') + '"').then(function (items) {
+        return pick(shuffle(items.slice(0, 6)), 3, function (x) { return sameArtist(x, artist.name); });
+      }));
+      return Promise.all(jobs).then(function (groups) {
+        var all = []; groups.forEach(function (g) { all = all.concat(g); });
+        return shuffle(all);
+      });
+    }).catch(function () { return []; });
+  }
+  function buildRadio(t) {
+    var artist = t.artists && t.artists[0];
+    var own = t.uri || ('spotify:track:' + t.id);
+    if (!artist) return Promise.resolve([own]);
+    return spotifyRecs(t).then(function (recs) {
+      if (recs.length >= 5) return [own].concat(recs);
+      return deezerRadio(t, artist).then(function (dz) {
+        if (dz.length >= 5) return [own].concat(dz);
+        return genreRadio(t);
+      });
     }).catch(function () { return [own]; });
   }
 
