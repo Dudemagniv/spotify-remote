@@ -26,6 +26,15 @@
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; background-color: var(--bg); overflow: hidden; }
+:root { --ext: 0px; }
+/* Home Screen mode: Safari's top bar is gone and the page can end a few pixels above the bottom edge.
+   Stretch the layers down by --ext; the padding keeps the controls exactly where they were. */
+html.standalone, html.standalone body { height: calc(100% + var(--ext)); }
+html.standalone #app { bottom: calc(-1 * var(--ext)); padding-bottom: calc(32px + var(--ext) + env(safe-area-inset-bottom)); }
+html.standalone #bg { bottom: calc(-400px - var(--ext)); }
+html.standalone #scrim, html.standalone #panel { bottom: calc(-1 * var(--ext)); }
+#dbg { position: fixed; left: 12px; top: 70px; z-index: 50; padding: 8px 12px; border-radius: 8px; background: rgba(0,0,0,0.75);
+  color: #fff; font: 13px/1.4 monospace; white-space: pre; pointer-events: none; }
 body {
   color: var(--ink);
   font-family: var(--body);
@@ -1407,6 +1416,34 @@ body.lyrics-on .title { font-size: 40px; }
   }
 
   // ---------- clock ----------
+  // ---------- Home Screen (standalone) bottom gap ----------
+  function fitStandalone() {
+    var root = document.documentElement;
+    var standalone = window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+    root.classList[standalone ? 'add' : 'remove']('standalone');
+    var ext = 0;
+    if (standalone) {
+      var land = window.innerWidth > window.innerHeight;
+      var target = land ? Math.min(screen.width, screen.height) : Math.max(screen.width, screen.height);
+      var gap = target - window.innerHeight;
+      ext = gap > 0 && gap < 120 ? gap + 6 : 26;   // measured gap if the page reports one, else a safe default
+    }
+    root.style.setProperty('--ext', ext + 'px');
+    if ($('dbg')) showDebug();
+  }
+  function showDebug() {
+    var el = $('dbg'); if (!el) return;
+    el.textContent = 'inner ' + window.innerWidth + 'x' + window.innerHeight + '\nscreen ' + screen.width + 'x' + screen.height +
+      '\nscrollY ' + Math.round(window.pageYOffset) + '\nstandalone ' + (window.navigator.standalone === true) +
+      '\next ' + document.documentElement.style.getPropertyValue('--ext');
+  }
+  function toggleDebug() {
+    var el = $('dbg');
+    if (el) { el.parentNode.removeChild(el); return; }
+    el = document.createElement('div'); el.id = 'dbg'; document.body.appendChild(el); showDebug();
+  }
+
   function clock() {
     var d = new Date(), h = d.getHours(), m = d.getMinutes();
     $('clock').textContent = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
@@ -1494,6 +1531,17 @@ body.lyrics-on .title { font-size: 40px; }
   }
 
   bind();
+  fitStandalone();
+  window.addEventListener('resize', fitStandalone);
+  window.addEventListener('orientationchange', function () { setTimeout(fitStandalone, 350); });
+  (function () {
+    var taps = [];
+    $('clock').addEventListener('click', function () {
+      var now = Date.now(); taps.push(now);
+      taps = taps.filter(function (t) { return now - t < 1500; });
+      if (taps.length >= 3) { taps = []; toggleDebug(); }
+    });
+  })();
   if (get(KEY.mode) === '1') setLyricsMode(true);
   handleRedirect().then(function () {
     if (getTokens()) startApp(); else showSetup();
